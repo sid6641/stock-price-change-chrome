@@ -1,0 +1,18 @@
+{
+  "name": "youtube-ticker-tracker",
+  "description": "Detects stock tickers in YouTube finance videos and shows price change % since publish date.",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "compile": "wxt build",
+    "postinstall": "wxt prepare"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "wxt": "^0.20.0"
+  }
+}

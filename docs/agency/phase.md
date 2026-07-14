@@ -1,8 +1,8 @@
-# Phase: 1 — Requirements & Contracting
+# Phase: 2 — Implementation
 
-**Step**: Spec complete — ready for handoff to Phase 2
+**Step**: Scaffold
 
-**Status**: ✅ Requirements brief approved. ✅ PRD approved. ✅ Technical spec drafted.
+**Status**: 🚧 In progress — scaffolding WXT extension
 
 **Phase 1 Deliverables**:
 - `docs/requirements-brief.md` — Requirements brief
@@ -10,4 +10,7 @@
 - `docs/technical-spec.md` — Technical specification (agent-ready)
 - `docs/agency/decisions.md` — 7 key decisions logged
 
-**Next Step**: Captain to approve technical spec → begin Phase 2 (Implementation)
+**Implementation Plan** (12 steps):
+1. Scaffold WXT project
+2. Types → storage → youtube helpers → gemini module
+3. Content script → background → alphavantage → UI → options → polish

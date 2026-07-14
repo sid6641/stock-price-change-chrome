@@ -1,9 +1,21 @@
 # Current Task
 
-**Task**: Awaiting captain approval of technical spec
+**Task**: Phase 2 — Scaffold WXT extension project
 
-**Status**: ✅ PRD approved. ✅ Technical spec drafted.
+**Step**: 1 of 12
 
-**Next Action**: Captain reviews `docs/technical-spec.md` — approves or requests changes
+**Status**: 🚧 In progress
 
-**After Approval**: Begin Phase 2 — Implementation
+**Actions**:
+- [x] Initialize WXT project
+- [ ] Create shared types
+- [ ] Implement storage module
+- [ ] Implement YouTube helpers
+- [ ] Implement Gemini module
+- [ ] Implement content script (Stage 1)
+- [ ] Implement background script
+- [ ] Implement Alpha Vantage module
+- [ ] Implement UI module
+- [ ] Wire up content script (Stage 2)
+- [ ] Build options page
+- [ ] Polish and edge cases
