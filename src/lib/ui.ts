@@ -2,6 +2,7 @@ import { logger } from './logger';
 import type { TickerResult } from '../types';
 
 const CARD_ID = 'ticker-tracker-card';
+const SCAN_BTN_ID = 'tt-scan-btn';
 const M = 'UI';
 
 // ─── Colors ────────────────────────────────────────────────────
@@ -84,13 +85,14 @@ function createCard(results: TickerResult[]): HTMLElement {
 
   card.appendChild(header);
 
-  // No results state
+  // No results state — should rarely appear now (caller skips renderCard for empty)
   if (results.length === 0) {
     const empty = document.createElement('div');
-    empty.textContent = 'No tickers detected in this video.';
+    empty.textContent = 'No tickers detected in this video. Captions may be disabled or unavailable.';
     Object.assign(empty.style, {
       color: COLORS.muted,
       padding: '8px 0',
+      fontSize: '13px',
     });
     card.appendChild(empty);
     return card;
@@ -201,6 +203,63 @@ function createTickerRow(ticker: TickerResult): HTMLElement {
   return row;
 }
 
+// ─── Scan Button ───────────────────────────────────────────────
+
+export function renderScanButton(onClick: () => void): void {
+  removeScanButton();
+
+  const target = findInsertionPoint();
+  if (!target) {
+    logger.warn(M, 'Could not find insertion point for scan button');
+    return;
+  }
+
+  const btn = document.createElement('button');
+  btn.id = SCAN_BTN_ID;
+  btn.textContent = '🔍 Scan Tickers';
+  Object.assign(btn.style, {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 16px',
+    margin: '8px 0',
+    backgroundColor: '#1a73e8',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '20px',
+    fontSize: '13px',
+    fontWeight: '600',
+    fontFamily: 'Roboto, Arial, sans-serif',
+    cursor: 'pointer',
+    transition: 'background-color 0.2s',
+  });
+
+  btn.addEventListener('mouseenter', () => {
+    btn.style.backgroundColor = '#1557b0';
+  });
+  btn.addEventListener('mouseleave', () => {
+    btn.style.backgroundColor = '#1a73e8';
+  });
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    btn.textContent = '⏳ Scanning...';
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+    onClick();
+  });
+
+  target.insertAdjacentElement('afterbegin', btn);
+  logger.log(M, 'Scan button inserted into DOM');
+}
+
+export function removeScanButton(): void {
+  const existing = document.getElementById(SCAN_BTN_ID);
+  if (existing) {
+    existing.remove();
+    logger.log(M, 'Removed scan button from DOM');
+  }
+}
+
 // ─── Insertion Point ───────────────────────────────────────────
 
 /**
@@ -212,13 +271,22 @@ function findInsertionPoint(): HTMLElement | null {
   const below = document.querySelector('#below');
   if (below instanceof HTMLElement) return below;
 
+  // Fallback: try #primary (the main content column)
+  const primary = document.querySelector('#primary');
+  if (primary instanceof HTMLElement) return primary;
+
   // Fallback: try to find the comment section container
   const comments = document.querySelector('#comments');
   if (comments?.parentElement instanceof HTMLElement) return comments.parentElement;
 
-  // Last resort: insert before the first child of #primary
-  const primary = document.querySelector('#primary');
-  if (primary instanceof HTMLElement) return primary;
+  // Fallback: try #content (ytd-app container)
+  const content = document.querySelector('#content');
+  if (content instanceof HTMLElement) return content;
 
-  return null;
+  // Fallback: try #page-manager
+  const pageManager = document.querySelector('#page-manager');
+  if (pageManager instanceof HTMLElement) return pageManager;
+
+  // Last resort: document body
+  return document.body;
 }

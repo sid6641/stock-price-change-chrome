@@ -14,7 +14,7 @@ export async function classifyVideo(
 ): Promise<TriggerResult> {
   logger.log(M, 'Stage 1 — classifying video', { title: meta.title.slice(0, 60) });
   const prompt = buildTriggerPrompt(meta);
-  const text = await callGemini(prompt, apiKey, 200);
+  const text = await callGemini(prompt, apiKey, 8192);
   const result = parseTriggerResponse(text);
   logger.log(M, 'Stage 1 result', {
     isFinance: result.isFinance,
@@ -36,9 +36,26 @@ export async function extractTickers(
   const wordCount = transcript.split(/\s+/).length;
   logger.log(M, `Stage 2 — extracting tickers from transcript (${wordCount} words)`);
   const prompt = buildExtractionPrompt(meta, transcript);
-  const text = await callGemini(prompt, apiKey, 1024);
+  const text = await callGemini(prompt, apiKey, 8192);
   const tickers = parseTickerResponse(text);
   logger.log(M, `Stage 2 result: ${tickers.length} tickers`, tickers);
+  return tickers;
+}
+
+/**
+ * Call 2b — Fallback: extract stock ticker symbols from the video
+ * description when no transcript is available. The description may
+ * contain timestamps, chapter markers, or explicit ticker mentions.
+ */
+export async function extractTickersFromDescription(
+  meta: VideoMeta,
+  apiKey: string,
+): Promise<string[]> {
+  logger.log(M, 'Stage 2b — extracting tickers from description (no transcript)');
+  const prompt = buildDescriptionTickerPrompt(meta);
+  const text = await callGemini(prompt, apiKey, 8192);
+  const tickers = parseTickerResponse(text);
+  logger.log(M, `Stage 2b result: ${tickers.length} tickers`, tickers);
   return tickers;
 }
 
@@ -53,7 +70,7 @@ function buildTriggerPrompt(meta: VideoMeta): string {
     '',
     'Identify if this video discusses stock market, investing, trading, or specific companies/equities.',
     '',
-    'Respond with JSON only:',
+    'Return ONLY valid JSON — no markdown, no code fences, no other text:',
     JSON.stringify({ is_finance: false, tickers: [], reasoning: '' }),
   ].join('\n');
 }
@@ -71,7 +88,29 @@ function buildExtractionPrompt(meta: VideoMeta, transcript: string): string {
     '- Exclude common words that happen to be tickers (IT, AI, GO, etc.) unless context clearly indicates they are stocks',
     '- No duplicates',
     '',
-    'Respond with JSON only:',
+    'Return ONLY valid JSON — no markdown, no code fences, no other text:',
+    JSON.stringify({ tickers: [], total_found: 0 }),
+  ].join('\n');
+}
+
+function buildDescriptionTickerPrompt(meta: VideoMeta): string {
+  return [
+    'You are a stock ticker extraction assistant. This YouTube video has no captions/transcript available.',
+    'Extract any stock ticker symbols you can identify from the video title and description below.',
+    '',
+    `Title: "${meta.title}"`,
+    `Description: "${meta.description}"`,
+    '',
+    'Rules:',
+    '- Look for explicit ticker symbols (AAPL, MSFT, TSLA, etc.) or well-known company names that have clear ticker mappings',
+    '- Include NYSE and NASDAQ listed tickers only',
+    '- Exclude non-equity tickers (crypto, ETFs, indices like SPX/NDX)',
+    '- Exclude common words that happen to be tickers (IT, AI, GO, etc.) unless context clearly indicates they are stocks',
+    '- If the title mentions a specific number of stocks (e.g., "Top 10 Stocks") but no tickers are named, return empty array',
+    '- No duplicates',
+    '- Be conservative: only return tickers you are highly confident about',
+    '',
+    'Return ONLY valid JSON — no markdown, no code fences, no other text:',
     JSON.stringify({ tickers: [], total_found: 0 }),
   ].join('\n');
 }
@@ -84,7 +123,7 @@ async function callGemini(
   maxTokens: number,
 ): Promise<string> {
   logger.log(M, 'Sending request to Gemini API', { maxTokens });
-  const url = `${BASE_URL}/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `${BASE_URL}/gemini-3.5-flash:generateContent?key=${apiKey}`;
 
   const start = performance.now();
   const response = await fetch(url, {
@@ -95,6 +134,7 @@ async function callGemini(
       generationConfig: {
         temperature: 0.1,
         maxOutputTokens: maxTokens,
+        stopSequences: ['\n}'],
       },
     }),
   });
@@ -106,12 +146,22 @@ async function callGemini(
     throw new Error(`Gemini API error (${response.status}): ${body}`);
   }
 
-  const data = await response.json();
+  const body = await response.text();
+  logger.log(M, `API raw response (${elapsed}ms): ${body.slice(0, 300)}`);
+  
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch (e) {
+    logger.error(M, 'Failed to parse JSON response', body);
+    throw new Error(`Failed to parse Gemini response: ${e}`);
+  }
+  
   const text: string | undefined =
     data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
   if (!text) {
-    logger.error(M, 'API returned empty response after ${elapsed}ms');
+    logger.error(M, `API returned no text after ${elapsed}ms`, { fullData: JSON.stringify(data).slice(0, 300) });
     throw new Error('Gemini returned empty response');
   }
 
@@ -174,11 +224,33 @@ function extractJson(text: string): string | null {
     return fenceMatch[1].trim();
   }
 
-  // Try raw JSON object
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    logger.log(M, 'Extracted raw JSON from response');
-    return jsonMatch[0].trim();
+  // Try raw JSON object — find first '{' and grab everything from there
+  const startIdx = text.indexOf('{');
+  if (startIdx !== -1) {
+    const candidate = text.slice(startIdx).trim();
+    // Check if JSON is complete (has matching braces)
+    let depth = 0;
+    let closed = false;
+    for (const ch of candidate) {
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) closed = true;
+      }
+    }
+    if (closed) {
+      logger.log(M, 'Extracted complete JSON from response');
+      return candidate;
+    }
+    // Incomplete JSON — try appending closing braces and parse
+    const padded = candidate + '}'.repeat(depth);
+    try {
+      JSON.parse(padded);
+      logger.log(M, 'Extracted recovered JSON (appended closing braces)');
+      return padded;
+    } catch {
+      logger.warn(M, 'Could not recover truncated JSON', candidate.slice(0, 80));
+    }
   }
 
   logger.warn(M, 'No JSON found in response', text.slice(0, 100));

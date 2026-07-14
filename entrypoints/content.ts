@@ -1,10 +1,70 @@
-// 🔥 MINIMAL SMOKE TEST — no imports
+import { getVideoMeta, extractTranscript } from '../src/lib/youtube';
+import { classifyVideo, extractTickers, extractTickersFromDescription } from '../src/lib/gemini';
+import { getTickerData } from '../src/lib/alphavantage';
+import { getConfig } from '../src/lib/storage';
+import { renderResultsCard, removeResultsCard, renderScanButton, removeScanButton } from '../src/lib/ui';
+import { logger } from '../src/lib/logger';
+import type { TickerResult, ScanResult } from '../src/types';
+
+const M = '[CONTENT]';
+
+// ─── Module-level state (shared across re-evaluations) ────────
+
+let currentVideoId: string = '';
+let scanInProgress = false;
+const tickerCache = new Map<string, TickerResult[]>();
+
+/** Send message to background script, silently ignoring if not connected. */
+function bgSend(msg: Record<string, unknown>): void {
+  try {
+    chrome.runtime.sendMessage(msg).catch(() => {});
+  } catch {
+    // background not ready yet
+  }
+}
+
 export default defineContentScript({
   matches: ['https://www.youtube.com/watch*'],
   main() {
+    // ─── Guard against duplicate injection ───────────────────────────
+    if ((window as any).__TT_CONTENT_LOADED__) {
+      console.log('🔥 Content script already loaded — skipping duplicate');
+      return;
+    }
+    (window as any).__TT_CONTENT_LOADED__ = true;
+
     console.log('🔥🔥🔥 CONTENT SCRIPT IS ALIVE');
     console.log('🔥 URL:', window.location.href);
     console.log('🔥 Title:', document.title);
+
+    // ─── Listen for SCAN trigger via direct messages ──────────────────
+
+    chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+      if (request.type === 'SCAN') {
+        logger.log(M, 'Received SCAN via runtime.onMessage');
+        runExtractionFlow().catch((err) => {
+          logger.error(M, 'Error handling SCAN message', err);
+        });
+      }
+      sendResponse({ received: true });
+    });
+
+    // ─── Listen for SCAN trigger via storage (most reliable) ─────────
+
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes['tt-scan-trigger']) {
+        logger.log(M, 'Received SCAN via storage.onChanged');
+        runExtractionFlow().catch((err) => {
+          logger.error(M, 'Error handling storage SCAN', err);
+        });
+      }
+    });
+
+    // ─── Auto-trigger Stage 1 on page load ──────────────────────────────
+
+    runTriggerFlow().catch((err) => {
+      logger.error(M, 'Error in auto-trigger', err);
+    });
   },
 });
 
@@ -20,6 +80,7 @@ async function runTriggerFlow(): Promise<void> {
 
   currentVideoId = meta.id;
   removeResultsCard();
+  removeScanButton();
 
   const config = await getConfig();
   if (!config.geminiApiKey) {
@@ -30,16 +91,17 @@ async function runTriggerFlow(): Promise<void> {
   try {
     const result = await classifyVideo(meta, config.geminiApiKey);
 
-    if (!result.isFinance || result.tickers.length === 0) {
-      logger.log(M, 'Not finance content or no tickers — clearing badge');
-      chrome.runtime.sendMessage({ type: 'SET_BADGE', count: 0 });
+    if (!result.isFinance) {
+      logger.log(M, 'Not finance content — clearing badge');
+      bgSend({ type: 'SET_BADGE', count: 0 });
+      removeScanButton();
       return;
     }
 
-    logger.log(M, `Finance content detected — setting badge to ${result.tickers.length}`);
-    chrome.runtime.sendMessage({ type: 'SET_BADGE', count: result.tickers.length });
+    // Finance content detected
+    logger.log(M, `Finance content detected — ${result.tickers.length} tickers from title/description`);
 
-    // Cache the Stage 1 result for later use
+    // Cache the Stage 1 result for later use (may be empty)
     tickerCache.set(meta.id, result.tickers.map((symbol) => ({
       symbol,
       companyName: '',
@@ -48,9 +110,29 @@ async function runTriggerFlow(): Promise<void> {
       latestPrice: null,
       publishDate: meta.publishDate,
     })));
+
+    // Only show badge and scan button if Stage 1 actually found tickers.
+    // Without tickers from Stage 1 AND no transcript (Stage 2), there's nothing to show.
+    if (result.tickers.length > 0) {
+      bgSend({ type: 'SET_BADGE', count: result.tickers.length });
+
+      renderScanButton(() => {
+        runExtractionFlow().finally(() => {
+          removeScanButton();
+        });
+      });
+    } else {
+      // No tickers from title alone — still try Stage 2 (transcript extraction),
+      // but don't show a misleading badge. Run silently in background.
+      logger.log(M, 'No tickers from Stage 1 — running Stage 2 silently');
+      bgSend({ type: 'SET_BADGE', count: 0 });
+      runExtractionFlow().catch((err) => {
+        logger.error(M, 'Error in silent Stage 2', err);
+      });
+    }
   } catch (err) {
     logger.error(M, 'Stage 1 failed', err);
-    chrome.runtime.sendMessage({ type: 'SET_BADGE', count: 0 });
+    bgSend({ type: 'SET_BADGE', count: 0 });
   }
 }
 
@@ -102,16 +184,40 @@ async function runExtractionFlow(): Promise<void> {
 
         tickerCache.set(meta.id, results);
         renderResultsCard(results);
-        chrome.runtime.sendMessage({ type: 'SCAN_RESULT', result: scanResult });
+        bgSend({ type: 'SCAN_RESULT', result: scanResult });
         logger.log(M, 'Scan complete — card rendered');
         scanInProgress = false;
         return;
       }
 
       logger.log(M, 'Transcript had no tickers — falling back to Stage 1');
+    } else {
+      // No transcript available — try extracting tickers from the
+      // video description (which has now fully loaded since Stage 1).
+      logger.log(M, 'No transcript — trying description-based extraction');
+      const descTickers = await extractTickersFromDescription(meta, config.geminiApiKey);
+
+      if (descTickers.length > 0) {
+        logger.log(M, `Description-based extraction found ${descTickers.length} tickers`);
+        const results = await lookupTickerPrices(descTickers, meta.publishDate, config.alphaVantageKey);
+
+        const scanResult: ScanResult = {
+          videoId: meta.id,
+          tickers: results,
+          scannedAt: Date.now(),
+          captionsAvailable,
+        };
+
+        tickerCache.set(meta.id, results);
+        renderResultsCard(results);
+        bgSend({ type: 'SCAN_RESULT', result: scanResult });
+        logger.log(M, 'Description-based scan complete — card rendered');
+        scanInProgress = false;
+        return;
+      }
     }
 
-    // Fallback: show Stage 1 tickers if transcript didn't yield more
+    // Fallback: show Stage 1 tickers if transcript/description didn't yield more
     const cached = tickerCache.get(meta.id) ?? [];
     if (cached.length > 0) {
       logger.log(M, `Using ${cached.length} cached Stage 1 tickers`);
@@ -122,12 +228,13 @@ async function runExtractionFlow(): Promise<void> {
       );
       renderResultsCard(results);
     } else {
-      logger.log(M, 'No tickers found at all — rendering empty card');
-      renderResultsCard([]);
+      // No tickers from any source — nothing to show.
+      // Don't render an empty card; just stay quiet.
+      logger.log(M, 'No tickers found at all — nothing to render');
     }
   } catch (err) {
     logger.error(M, 'Stage 2 failed', err);
-    chrome.runtime.sendMessage({
+    bgSend({
       type: 'SCAN_ERROR',
       error: err instanceof Error ? err.message : 'Unknown error',
     });
