@@ -1,44 +1,10 @@
-import { logger } from '../src/lib/logger';
-import { getVideoMeta, extractTranscript, onYouTubeNavigation } from '../src/lib/youtube';
-import { classifyVideo, extractTickers } from '../src/lib/gemini';
-import { getConfig } from '../src/lib/storage';
-import { getTickerData } from '../src/lib/alphavantage';
-import { renderResultsCard, removeResultsCard } from '../src/lib/ui';
-import type { ExtensionMessage, TickerResult, ScanResult } from '../src/types';
-
-const M = 'Content';
-
-// ─── State ─────────────────────────────────────────────────────
-
-let currentVideoId: string | null = null;
-let scanInProgress = false;
-const tickerCache = new Map<string, TickerResult[]>();
-
-// ─── Entry Point ───────────────────────────────────────────────
-
+// 🔥 MINIMAL SMOKE TEST — no imports
 export default defineContentScript({
   matches: ['https://www.youtube.com/watch*'],
   main() {
-    logger.log(M, 'Content script injected on YouTube watch page');
-
-    // Run on initial load
-    runTriggerFlow();
-
-    // Re-run on SPA navigation
-    const cleanup = onYouTubeNavigation(() => {
-      runTriggerFlow();
-    });
-
-    // Listen for SCAN message from background
-    chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
-      if (msg.type === 'SCAN') {
-        logger.log(M, 'Received SCAN message from background');
-        runExtractionFlow();
-      }
-    });
-
-    // Cleanup on unload
-    window.addEventListener('beforeunload', cleanup);
+    console.log('🔥🔥🔥 CONTENT SCRIPT IS ALIVE');
+    console.log('🔥 URL:', window.location.href);
+    console.log('🔥 Title:', document.title);
   },
 });
 

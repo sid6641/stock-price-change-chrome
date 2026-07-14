@@ -1,45 +1,60 @@
-import { logger } from '../src/lib/logger';
-import type { ExtensionMessage } from '../src/types';
-
-const M = 'Background';
+// 🔥 DIAGNOSTIC BACKGROUND — full instrumentation
+const M = '🔥 BG';
 
 export default defineBackground(() => {
-  logger.log(M, 'Service worker started');
-
-  // ─── Badge Management ──────────────────────────────────────
-
-  chrome.runtime.onMessage.addListener(
-    (msg: ExtensionMessage, sender) => {
-      if (msg.type === 'SET_BADGE') {
-        const tabId = sender.tab?.id;
-        if (!tabId) {
-          logger.warn(M, 'SET_BADGE: no tab ID');
-          return;
-        }
-
-        const text = msg.count > 0 ? String(msg.count) : '';
-        logger.log(M, `Setting badge to "${text}" on tab ${tabId}`);
-        chrome.action.setBadgeText({ text, tabId });
-        chrome.action.setBadgeBackgroundColor({ color: '#4caf50', tabId });
-      }
-    },
+  console.log(M, 'ALIVE — Service worker started');
+  console.log(M, 'Runtime ID:', chrome.runtime.id);
+  console.log(M, 'Manifest:',
+    JSON.stringify({
+      version: chrome.runtime.getManifest().version,
+      permissions: chrome.runtime.getManifest().permissions,
+      host_permissions: chrome.runtime.getManifest().host_permissions,
+      content_scripts: chrome.runtime.getManifest().content_scripts,
+    })
   );
 
-  // ─── Click Handler ─────────────────────────────────────────
+  // Log all installed content scripts
+  chrome.scripting.getRegisteredContentScripts().then(scripts => {
+    console.log(M, 'Registered content scripts:', JSON.stringify(scripts));
+  }).catch(err => {
+    console.log(M, 'getRegisteredContentScripts error:', err.message);
+  });
 
-  chrome.action.onClicked.addListener(async (tab) => {
-    if (!tab.id || !tab.url?.includes('youtube.com/watch')) {
-      logger.log(M, 'Click ignored — not a YouTube watch page');
-      return;
+  // Listen for tab updates to detect YouTube navigation
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'loading' && tab.url?.includes('youtube.com/watch')) {
+      console.log(M, `Tab ${tabId} loading YouTube:`, tab.url);
     }
-
-    logger.log(M, `Icon clicked on tab ${tab.id} — sending SCAN message`);
-
-    try {
-      await chrome.tabs.sendMessage(tab.id, { type: 'SCAN' } satisfies ExtensionMessage);
-    } catch {
-      logger.warn(M, 'Content script not ready on tab — will retry on next click');
+    if (changeInfo.status === 'complete' && tab.url?.includes('youtube.com/watch')) {
+      console.log(M, `Tab ${tabId} COMPLETE YouTube:`, tab.url);
+      // Try programmatic injection as fallback
+      injectContentScript(tabId);
     }
   });
+
+  // Click handler — try programmatic injection
+  chrome.action.onClicked.addListener(async (tab) => {
+    console.log(M, 'Icon clicked on tab', tab.id, tab.url);
+    if (!tab.id || !tab.url?.includes('youtube.com/watch')) {
+      console.log(M, 'Not a YouTube watch page — ignoring');
+      return;
+    }
+    await injectContentScript(tab.id);
+  });
 });
+
+async function injectContentScript(tabId: number) {
+  console.log(M, `Attempting programmatic injection into tab ${tabId}`);
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content-scripts/content.js'],
+    });
+    console.log(M, `Injection result:`, JSON.stringify(results));
+  } catch (err) {
+    console.error(M, `Injection FAILED:`, err.message);
+    console.error(M, `Full error:`, JSON.stringify(err));
+  }
+}
+
 
