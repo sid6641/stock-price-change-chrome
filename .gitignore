@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.wxt/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Firstmate (clone separately from https://github.com/sidazhang/firstmate)
+firstmate/
+
+# Codebase memory (local dev tool cache)
+.codebase-memory/
+
+# Logs
+*.log
