@@ -21,9 +21,6 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Firstmate (clone separately from https://github.com/sidazhang/firstmate)
-firstmate/
-
 # Codebase memory (local dev tool cache)
 .codebase-memory/
 
