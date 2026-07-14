@@ -3,6 +3,7 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   extensionApi: 'chrome',
   modules: [],
+  outDir: 'output',
   manifest: {
     name: 'YouTube Ticker Tracker',
     version: '0.1.0',

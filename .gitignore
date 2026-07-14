@@ -4,7 +4,7 @@ node_modules/
 # Build output
 dist/
 .wxt/
-.output/
+output/
 
 # IDE
 .vscode/
