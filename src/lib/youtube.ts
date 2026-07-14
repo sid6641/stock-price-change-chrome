@@ -1,4 +1,7 @@
+import { logger } from './logger';
 import type { VideoMeta } from '../types';
+
+const M = 'YouTube';
 
 /**
  * Extract video metadata from the YouTube watch page DOM.
@@ -8,7 +11,10 @@ import type { VideoMeta } from '../types';
 export function getVideoMeta(): VideoMeta | null {
   const url = new URL(window.location.href);
   const id = url.searchParams.get('v');
-  if (!id) return null;
+  if (!id) {
+    logger.warn(M, 'No video ID in URL');
+    return null;
+  }
 
   const titleEl = document.querySelector('h1.ytd-watch-metadata');
   const title = titleEl?.textContent?.trim() ?? document.title.replace(' - YouTube', '').trim();
@@ -17,8 +23,12 @@ export function getVideoMeta(): VideoMeta | null {
   const description = descEl?.textContent?.trim() ?? '';
 
   const publishDate = extractPublishDate();
-  if (!publishDate) return null;
+  if (!publishDate) {
+    logger.warn(M, 'Could not extract publish date for video', id);
+    return null;
+  }
 
+  logger.log(M, 'Meta extracted', { id, titleLen: title.length, descLen: description.length, publishDate });
   return { id, title, description, publishDate };
 }
 
@@ -48,13 +58,21 @@ function extractPublishDate(): string | null {
  */
 export async function extractTranscript(): Promise<string | null> {
   const captionUrl = getCaptionBaseUrl();
-  if (!captionUrl) return null;
+  if (!captionUrl) {
+    logger.log(M, 'No captions available for this video');
+    return null;
+  }
 
+  logger.log(M, 'Fetching transcript from', captionUrl);
   try {
     const response = await fetch(captionUrl);
     const xml = await response.text();
-    return parseTranscriptXml(xml);
-  } catch {
+    const transcript = parseTranscriptXml(xml);
+    const wordCount = transcript.split(/\s+/).length;
+    logger.log(M, `Transcript extracted: ${wordCount} words`);
+    return transcript;
+  } catch (err) {
+    logger.error(M, 'Failed to fetch transcript', err);
     return null;
   }
 }
@@ -118,7 +136,10 @@ function findInitialDataScript(): HTMLScriptElement | null {
  * Calls the callback when a new video page loads.
  */
 export function onYouTubeNavigation(callback: () => void): () => void {
-  const handler = () => callback();
+  const handler = () => {
+    logger.log(M, 'SPA navigation detected — re-running trigger flow');
+    callback();
+  };
   document.addEventListener('yt-navigate-finish', handler);
   // Return cleanup function
   return () => document.removeEventListener('yt-navigate-finish', handler);

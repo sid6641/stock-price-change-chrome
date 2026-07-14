@@ -1,6 +1,8 @@
+import { logger } from './logger';
 import type { TickerResult } from '../types';
 
 const BASE_URL = 'https://www.alphavantage.co/query';
+const M = 'AlphaVantage';
 
 // ─── In-Memory Cache ───────────────────────────────────────────
 
@@ -24,10 +26,12 @@ export async function getTickerData(
   apiKey: string,
 ): Promise<TickerResult> {
   const normalizedSymbol = symbol.toUpperCase().trim();
+  logger.log(M, `Looking up ${normalizedSymbol}`);
   const timeSeries = await fetchTimeSeries(normalizedSymbol, apiKey);
   const dates = Object.keys(timeSeries).sort();
 
   if (dates.length === 0) {
+    logger.warn(M, `No data for ${normalizedSymbol}`);
     return {
       symbol: normalizedSymbol,
       companyName: '',
@@ -41,11 +45,13 @@ export async function getTickerData(
 
   const latestDate = dates[dates.length - 1];
   const latestClose = parseFloat(timeSeries[latestDate].close);
+  logger.log(M, `${normalizedSymbol}: latest ${latestDate} close = ${latestClose}`);
 
   // Find the closest trading day on or before the publish date
   const publishClose = findClosestPrice(timeSeries, publishDate);
 
   if (publishClose === null) {
+    logger.warn(M, `No price near publish date ${publishDate} for ${normalizedSymbol}`);
     return {
       symbol: normalizedSymbol,
       companyName: '',
@@ -57,11 +63,13 @@ export async function getTickerData(
     };
   }
 
+  logger.log(M, `${normalizedSymbol}: publish ${publishDate} close = ${publishClose}`);
   const changePercent = ((latestClose - publishClose) / publishClose) * 100;
+  logger.log(M, `${normalizedSymbol}: change = ${changePercent.toFixed(2)}%`);
 
   return {
     symbol: normalizedSymbol,
-    companyName: normalizedSymbol, // Alpha Vantage free tier doesn't include company name in daily endpoint
+    companyName: normalizedSymbol,
     changePercent: Math.round(changePercent * 100) / 100,
     publishPrice: Math.round(publishClose * 100) / 100,
     latestPrice: Math.round(latestClose * 100) / 100,
@@ -78,29 +86,38 @@ async function fetchTimeSeries(
   // Check cache
   const cached = cache.get(symbol);
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL) {
+    logger.log(M, `Cache HIT for ${symbol} (age: ${Math.round((Date.now() - cached.cachedAt) / 1000)}s)`);
     return cached.data;
   }
 
+  logger.log(M, `Cache MISS for ${symbol} — fetching from API`);
   const url = `${BASE_URL}?function=TIME_SERIES_DAILY&symbol=${symbol}&outputsize=compact&apikey=${apiKey}`;
 
+  const start = performance.now();
   const response = await fetch(url);
+  const elapsed = Math.round(performance.now() - start);
+
   if (!response.ok) {
+    logger.error(M, `API error (${response.status}) after ${elapsed}ms`);
     throw new Error(`Alpha Vantage error (${response.status})`);
   }
 
   const data = await response.json();
+  logger.log(M, `API responded in ${elapsed}ms`);
 
   // Check for API error responses
   if (data['Error Message']) {
+    logger.error(M, `API error for ${symbol}`, data['Error Message']);
     throw new Error(data['Error Message']);
   }
   if (data['Note']) {
-    // Rate limit message
+    logger.warn(M, `Rate limited for ${symbol}`, data['Note'].slice(0, 100));
     throw new Error(`Rate limited: ${data['Note']}`);
   }
 
   const timeSeries = data['Time Series (Daily)'];
   if (!timeSeries) {
+    logger.error(M, `No Time Series (Daily) in response for ${symbol}`);
     throw new Error(`No data for symbol: ${symbol}`);
   }
 
@@ -111,7 +128,9 @@ async function fetchTimeSeries(
     parsed[dateStr] = { close: parseFloat(entry['4. close']) };
   }
 
+  const dateCount = Object.keys(parsed).length;
   cache.set(symbol, { data: parsed, cachedAt: Date.now() });
+  logger.log(M, `Cached ${dateCount} days of data for ${symbol}`);
   return parsed;
 }
 

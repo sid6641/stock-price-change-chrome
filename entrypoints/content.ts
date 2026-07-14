@@ -1,9 +1,12 @@
+import { logger } from '../src/lib/logger';
 import { getVideoMeta, extractTranscript, onYouTubeNavigation } from '../src/lib/youtube';
 import { classifyVideo, extractTickers } from '../src/lib/gemini';
 import { getConfig } from '../src/lib/storage';
 import { getTickerData } from '../src/lib/alphavantage';
 import { renderResultsCard, removeResultsCard } from '../src/lib/ui';
 import type { ExtensionMessage, TickerResult, ScanResult } from '../src/types';
+
+const M = 'Content';
 
 // ─── State ─────────────────────────────────────────────────────
 
@@ -16,6 +19,8 @@ const tickerCache = new Map<string, TickerResult[]>();
 export default defineContentScript({
   matches: ['https://www.youtube.com/watch*'],
   main() {
+    logger.log(M, 'Content script injected on YouTube watch page');
+
     // Run on initial load
     runTriggerFlow();
 
@@ -27,6 +32,7 @@ export default defineContentScript({
     // Listen for SCAN message from background
     chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
       if (msg.type === 'SCAN') {
+        logger.log(M, 'Received SCAN message from background');
         runExtractionFlow();
       }
     });
@@ -39,25 +45,32 @@ export default defineContentScript({
 // ─── Stage 1: Trigger Flow ─────────────────────────────────────
 
 async function runTriggerFlow(): Promise<void> {
+  logger.log(M, '=== Stage 1: Trigger Flow ===');
   const meta = getVideoMeta();
-  if (!meta) return;
+  if (!meta) {
+    logger.warn(M, 'Could not extract video metadata — aborting');
+    return;
+  }
 
   currentVideoId = meta.id;
   removeResultsCard();
 
   const config = await getConfig();
-  if (!config.geminiApiKey) return; // Not configured yet
+  if (!config.geminiApiKey) {
+    logger.warn(M, 'No Gemini API key configured — aborting');
+    return;
+  }
 
   try {
     const result = await classifyVideo(meta, config.geminiApiKey);
 
     if (!result.isFinance || result.tickers.length === 0) {
-      // Not finance content — clean up
+      logger.log(M, 'Not finance content or no tickers — clearing badge');
       chrome.runtime.sendMessage({ type: 'SET_BADGE', count: 0 });
       return;
     }
 
-    // Finance content with tickers — set badge
+    logger.log(M, `Finance content detected — setting badge to ${result.tickers.length}`);
     chrome.runtime.sendMessage({ type: 'SET_BADGE', count: result.tickers.length });
 
     // Cache the Stage 1 result for later use
@@ -69,8 +82,8 @@ async function runTriggerFlow(): Promise<void> {
       latestPrice: null,
       publishDate: meta.publishDate,
     })));
-  } catch {
-    // Gemini call failed — silently exit (no badge)
+  } catch (err) {
+    logger.error(M, 'Stage 1 failed', err);
     chrome.runtime.sendMessage({ type: 'SET_BADGE', count: 0 });
   }
 }
@@ -78,18 +91,25 @@ async function runTriggerFlow(): Promise<void> {
 // ─── Stage 2: Extraction Flow ──────────────────────────────────
 
 async function runExtractionFlow(): Promise<void> {
-  if (scanInProgress) return;
+  if (scanInProgress) {
+    logger.log(M, 'Scan already in progress — ignoring duplicate click');
+    return;
+  }
   scanInProgress = true;
+
+  logger.log(M, '=== Stage 2: Extraction Flow ===');
 
   try {
     const meta = getVideoMeta();
     if (!meta || meta.id !== currentVideoId) {
+      logger.warn(M, 'Video meta mismatch or missing — aborting');
       scanInProgress = false;
       return;
     }
 
     const config = await getConfig();
     if (!config.geminiApiKey || !config.alphaVantageKey) {
+      logger.warn(M, 'Missing API keys — aborting scan');
       scanInProgress = false;
       return;
     }
@@ -97,13 +117,14 @@ async function runExtractionFlow(): Promise<void> {
     // Extract transcript
     const transcript = await extractTranscript();
     const captionsAvailable = transcript !== null;
+    logger.log(M, 'Captions available:', captionsAvailable);
 
     if (transcript) {
       // Extract tickers from full transcript via Gemini
       const tickers = await extractTickers(meta, transcript, config.geminiApiKey);
 
       if (tickers.length > 0) {
-        // Look up price data for each ticker
+        logger.log(M, `Looking up prices for ${tickers.length} tickers`);
         const results = await lookupTickerPrices(tickers, meta.publishDate, config.alphaVantageKey);
 
         const scanResult: ScanResult = {
@@ -116,14 +137,18 @@ async function runExtractionFlow(): Promise<void> {
         tickerCache.set(meta.id, results);
         renderResultsCard(results);
         chrome.runtime.sendMessage({ type: 'SCAN_RESULT', result: scanResult });
+        logger.log(M, 'Scan complete — card rendered');
         scanInProgress = false;
         return;
       }
+
+      logger.log(M, 'Transcript had no tickers — falling back to Stage 1');
     }
 
     // Fallback: show Stage 1 tickers if transcript didn't yield more
     const cached = tickerCache.get(meta.id) ?? [];
     if (cached.length > 0) {
+      logger.log(M, `Using ${cached.length} cached Stage 1 tickers`);
       const results = await lookupTickerPrices(
         cached.map((t) => t.symbol),
         meta.publishDate,
@@ -131,10 +156,11 @@ async function runExtractionFlow(): Promise<void> {
       );
       renderResultsCard(results);
     } else {
-      // No tickers found at all
+      logger.log(M, 'No tickers found at all — rendering empty card');
       renderResultsCard([]);
     }
   } catch (err) {
+    logger.error(M, 'Stage 2 failed', err);
     chrome.runtime.sendMessage({
       type: 'SCAN_ERROR',
       error: err instanceof Error ? err.message : 'Unknown error',
@@ -152,12 +178,17 @@ async function lookupTickerPrices(
   apiKey: string,
 ): Promise<TickerResult[]> {
   const results: TickerResult[] = [];
+  logger.log(M, `Starting price lookup for ${symbols.length} symbols`);
 
-  for (const symbol of symbols) {
+  for (let i = 0; i < symbols.length; i++) {
+    const symbol = symbols[i];
+    logger.log(M, `Price lookup [${i + 1}/${symbols.length}]: ${symbol}`);
+
     try {
       const data = await getTickerData(symbol, publishDate, apiKey);
       results.push(data);
-    } catch {
+    } catch (err) {
+      logger.error(M, `Lookup failed for ${symbol}`, err);
       results.push({
         symbol: symbol.toUpperCase(),
         companyName: '',
@@ -170,11 +201,14 @@ async function lookupTickerPrices(
     }
 
     // Rate limit: 12s spacing between Alpha Vantage calls (5/min free tier)
-    if (symbols.length > 1) {
+    if (i < symbols.length - 1) {
+      logger.log(M, `Waiting 12s before next Alpha Vantage call (rate limit)`);
       await delay(12000);
     }
   }
 
+  const successCount = results.filter((r) => r.changePercent !== null).length;
+  logger.log(M, `Price lookup complete: ${successCount}/${symbols.length} succeeded`);
   return results;
 }
 

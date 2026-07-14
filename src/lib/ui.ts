@@ -1,6 +1,8 @@
+import { logger } from './logger';
 import type { TickerResult } from '../types';
 
 const CARD_ID = 'ticker-tracker-card';
+const M = 'UI';
 
 // ─── Colors ────────────────────────────────────────────────────
 
@@ -17,18 +19,26 @@ const COLORS = {
 // ─── Render ────────────────────────────────────────────────────
 
 export function renderResultsCard(results: TickerResult[]): void {
+  logger.log(M, `Rendering card with ${results.length} tickers`);
   removeResultsCard();
 
   const target = findInsertionPoint();
-  if (!target) return;
+  if (!target) {
+    logger.warn(M, 'Could not find insertion point in YouTube DOM');
+    return;
+  }
 
   const card = createCard(results);
   target.insertAdjacentElement('afterbegin', card);
+  logger.log(M, 'Card inserted into DOM');
 }
 
 export function removeResultsCard(): void {
   const existing = document.getElementById(CARD_ID);
-  if (existing) existing.remove();
+  if (existing) {
+    existing.remove();
+    logger.log(M, 'Removed existing card from DOM');
+  }
 }
 
 // ─── Card Builder ──────────────────────────────────────────────
